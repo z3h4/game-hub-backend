@@ -9,4 +9,5 @@ Rails.application.routes.draw do
   # root "posts#index"
   get "/api/games", to: "games#index"
   get "/api/genres", to: "genres#index"
+  get "/api/platform_families",     to: "platform_families#index"
 end

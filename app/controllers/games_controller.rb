@@ -1,10 +1,12 @@
 class GamesController < ApplicationController
   def index
     result = Igdb::Client.new.games(
-      search: params[:q],
-      genre:  params[:genre],
-      page:   params[:page] || 1,
-      limit:  params[:limit] || 24
+      search:          params[:q],
+      genre:           params[:genre],
+      platforms:       params[:platforms],
+      platform_family: params[:platform_family],
+      page:            params[:page] || 1,
+      limit:           params[:limit] || 24
     )
     render json: result
   end

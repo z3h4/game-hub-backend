@@ -2,6 +2,7 @@ module Igdb
   class Client
     BASE_URL = "https://api.igdb.com/v4".freeze
     GENRE_CACHE_KEY   = "igdb/genres/v1".freeze
+    PLATFORM_FAMILY_CACHE_KEY = "igdb/platform_families/v1".freeze
     MULTIQUERY_LIMIT  = 10 # IGDB allows max 10 queries per multiquery request
 
     class ApiError < StandardError
@@ -18,14 +19,21 @@ module Igdb
     ].join(", ").freeze
 
     # Returns { count:, results: [...], has_more: bool }
-    def games(search: nil, genre: nil, page: 1, limit: 24)
+    def games(search: nil, genre: nil, platforms: nil, platform_family: nil, page: 1, limit: 24)
       page     = [ page.to_i, 1 ].max
       limit    = limit.to_i.clamp(1, 50)
       offset   = (page - 1) * limit
       genre_id = genre.to_i.positive? ? genre.to_i : nil # ignore junk input
+      platform_ids = parse_ids(platforms)
+
+      if platform_family.present?
+        family_ids   = platform_family(platform_family)&.dig(:platform_ids) || []
+        platform_ids = platform_ids.empty? ? family_ids : (platform_ids & family_ids)
+      end
 
       conditions = []
       conditions << "genres = (#{genre_id})" if genre_id
+      conditions << "platforms = (#{platform_ids.join(',')})" if platform_ids.any? # any of these
       conditions << "cover != null & total_rating_count > 5" if search.blank?
 
       lines = []
@@ -49,6 +57,35 @@ module Igdb
 
         results = rows.map do |g|
           { id: g["id"], name: g["name"], slug: g["slug"], image_background: images[g["id"]] }
+        end
+
+        { count: results.size, results: results }
+      end
+    end
+
+    # Returns { count:, results: [{ id:, name:, slug:, platform_ids:, platforms: [...] }] }
+    def platform_families
+      Rails.cache.fetch(PLATFORM_FAMILY_CACHE_KEY, expires_in: 1.day) do
+        families = post("platform_families", "fields name, slug; sort name asc; limit 500;")
+
+        platforms = post("platforms", <<~Q.squish)
+          fields name, slug, abbreviation, generation, platform_family, platform_logo.image_id;
+          where platform_family != null;
+          sort name asc;
+          limit 500;
+        Q
+
+        by_family = platforms.group_by { |p| p["platform_family"] } # unexpanded -> family id
+
+        results = families.map do |family|
+          members = by_family[family["id"]] || []
+          {
+            id:           family["id"],
+            name:         family["name"],
+            slug:         family["slug"],
+            platform_ids: members.map { |m| m["id"] },
+            platforms:    members.map { |m| serialize_platform(m) }
+          }
         end
 
         { count: results.size, results: results }
@@ -152,6 +189,27 @@ module Igdb
       elsif (cover = game.dig("cover", "image_id"))
         "https://images.igdb.com/igdb/image/upload/t_cover_big/#{cover}.jpg"
       end
+    end
+
+    def platform_family(id)
+      platform_families[:results].find { |f| f[:id] == id.to_i }
+    end
+
+    # "7,8,9" -> [7, 8, 9]; ignores junk so nothing unsafe reaches the query
+    def parse_ids(value)
+      value.to_s.split(",").map(&:to_i).select(&:positive?).uniq.first(40)
+    end
+
+    def serialize_platform(row)
+      logo = row.dig("platform_logo", "image_id")
+      {
+        id:           row["id"],
+        name:         row["name"],
+        slug:         row["slug"],
+        abbreviation: row["abbreviation"],
+        generation:   row["generation"],
+        logo_url:     logo && "https://images.igdb.com/igdb/image/upload/t_logo_med/#{logo}.png"
+      }
     end
   end
 end
