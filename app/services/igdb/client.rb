@@ -5,6 +5,16 @@ module Igdb
     PLATFORM_FAMILY_CACHE_KEY = "igdb/platform_families/v1".freeze
     MULTIQUERY_LIMIT  = 10 # IGDB allows max 10 queries per multiquery request
 
+    ORDER_FIELDS = {
+      "relevance"  => nil,
+      "name"       => "name",
+      "released"   => "first_release_date",
+      "added"      => "created_at",
+      "popularity" => "total_rating_count", # IGDB has no popularity field on games; see notes
+      "rating"     => "total_rating"
+    }.freeze
+    DEFAULT_ORDERING = "-popularity".freeze
+
     class ApiError < StandardError
       attr_reader :status
       def initialize(message, status)
@@ -19,11 +29,11 @@ module Igdb
     ].join(", ").freeze
 
     # Returns { count:, results: [...], has_more: bool }
-    def games(search: nil, genre: nil, platforms: nil, platform_family: nil, page: 1, limit: 24)
-      page     = [ page.to_i, 1 ].max
-      limit    = limit.to_i.clamp(1, 50)
-      offset   = (page - 1) * limit
-      genre_id = genre.to_i.positive? ? genre.to_i : nil # ignore junk input
+    def games(search: nil, genre: nil, platforms: nil, platform_family: nil, ordering: nil, page: 1, limit: 24)
+      page         = [ page.to_i, 1 ].max
+      limit        = limit.to_i.clamp(1, 50)
+      offset       = (page - 1) * limit
+      genre_id     = genre.to_i.positive? ? genre.to_i : nil
       platform_ids = parse_ids(platforms)
 
       if platform_family.present?
@@ -31,22 +41,31 @@ module Igdb
         platform_ids = platform_ids.empty? ? family_ids : (platform_ids & family_ids)
       end
 
+      order = parse_ordering(ordering)
+
       conditions = []
       conditions << "genres = (#{genre_id})" if genre_id
-      conditions << "platforms = (#{platform_ids.join(',')})" if platform_ids.any? # any of these
-      conditions << "cover != null & total_rating_count > 5" if search.blank?
+      conditions << "platforms = (#{platform_ids.join(',')})" if platform_ids.any?
+      conditions << "cover != null" if search.blank?
+      conditions.concat(ordering_conditions(order)) if search.blank?
 
       lines = []
       lines << %(search "#{sanitize(search)}";) if search.present?
       lines << "fields #{FIELDS};"
       lines << "where #{conditions.join(' & ')};" if conditions.any?
       # IGDB does not allow `sort` together with `search`
-      lines << "sort total_rating_count desc;" if search.blank?
+      lines << "sort #{order[:field]} #{order[:direction]};" if search.blank?
       lines << "limit #{limit + 1};"
       lines << "offset #{offset};"
 
       rows = post("games", lines.join(" "))
-      { count: rows.size, results: rows.first(limit).map { |g| serialize(g) }, has_more: rows.size > limit }
+
+      {
+        count:    rows.size,
+        results:  rows.first(limit).map { |g| serialize(g) },
+        has_more: rows.size > limit,
+        ordering: search.blank? ? order[:value] : nil # nil = no sort applied (search results use relevance)
+      }
     end
 
     # Returns { count:, results: [{ id:, name:, slug:, image_url: }] }
@@ -210,6 +229,37 @@ module Igdb
         generation:   row["generation"],
         logo_url:     logo && "https://images.igdb.com/igdb/image/upload/t_logo_med/#{logo}.png"
       }
+    end
+
+    # "-released" => { value: "-released", field: "first_release_date", direction: "desc", key: "released" }
+    def parse_ordering(raw)
+      value = raw.to_s.strip
+      key   = value.delete_prefix("-")
+      value = DEFAULT_ORDERING unless ORDER_FIELDS.key?(key) # unknown input falls back to default
+
+      key = value.delete_prefix("-")
+      {
+        value:     value,
+        key:       key,
+        field:     ORDER_FIELDS.fetch(key),
+        direction: value.start_with?("-") ? "desc" : "asc"
+      }
+    end
+
+    # Extra filters so sorting doesn't surface junk (null dates, unrated games, unreleased titles)
+    def ordering_conditions(order)
+      case order[:key]
+      when "released"
+        conds = [ "first_release_date != null" ]
+        conds << "first_release_date <= #{Time.current.to_i}" if order[:direction] == "desc" # hide unreleased
+        conds
+      when "rating"
+        [ "total_rating != null", "total_rating_count > 5" ] # avoid one-vote 100% scores
+      when "popularity"
+        [ "total_rating_count > 5" ]
+      else # name, added
+        []
+      end
     end
   end
 end
