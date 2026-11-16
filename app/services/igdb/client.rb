@@ -24,7 +24,7 @@ module Igdb
     end
 
     FIELDS = %w[
-      name summary first_release_date total_rating
+      name summary first_release_date total_rating rating
       cover.image_id genres.name platforms.name platforms.platform_family.name platforms.platform_family.slug
     ].join(", ").freeze
 
@@ -143,6 +143,7 @@ module Igdb
         name:      game["name"],
         summary:   game["summary"],
         metacritic:    game["total_rating"]&.round,
+        rating_top: game["rating"] ? (game["rating"] / 20.0).round : nil,
         year:      game["first_release_date"] && Time.at(game["first_release_date"]).utc.year,
         background_image: game.dig("cover", "image_id") &&
           "https://images.igdb.com/igdb/image/upload/t_cover_big/#{game.dig('cover', 'image_id')}.jpg",
