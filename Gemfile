@@ -40,4 +40,4 @@ end
 
 gem "faraday", "~> 2.15"
 gem "dotenv-rails", "~> 3.2"
-gem "json", "< 3.0"
+gem "json", "< 4.0"
